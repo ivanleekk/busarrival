@@ -33,7 +33,7 @@ func main() {
 	router := gin.Default()
 	router.GET("/busstops/:skip", getBusStopsPaginatedHandler(client))
 	router.GET("/busstops", getBusStopsHandler(client))
-	err := router.Run("localhost:8080")
+	err := router.Run("0.0.0.0:8080")
 	if err != nil {
 		return
 	}
