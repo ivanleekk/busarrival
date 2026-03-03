@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/ivanleekk/ltadatamall"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -30,9 +31,20 @@ func InitNeo4j() {
 	}
 
 	ctx := context.Background()
-	err = Driver.VerifyConnectivity(ctx)
+
+	// Retry logic for Neo4j startup since it takes a while to boot inside Docker
+	maxRetries := 30
+	for i := 0; i < maxRetries; i++ {
+		err = Driver.VerifyConnectivity(ctx)
+		if err == nil {
+			break
+		}
+		log.Printf("Neo4j not ready (attempt %d/%d): %v", i+1, maxRetries, err)
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
-		log.Fatalf("Failed to connect to Neo4j: %v", err)
+		log.Fatalf("Failed to connect to Neo4j after %d attempts: %v", maxRetries, err)
 	}
 
 	log.Println("Neo4j initialized.")

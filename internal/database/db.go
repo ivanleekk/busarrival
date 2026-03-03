@@ -30,11 +30,20 @@ func InitDB() {
 	)
 
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: newLogger,
-	})
+	maxRetries := 30
+	for i := 0; i < maxRetries; i++ {
+		DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+			Logger: newLogger,
+		})
+		if err == nil {
+			break
+		}
+		log.Printf("Database not ready (attempt %d/%d): %v", i+1, maxRetries, err)
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to connect to database after %d attempts: %v", maxRetries, err)
 	}
 
 	err = DB.AutoMigrate(&models.ArrivalLog{})
