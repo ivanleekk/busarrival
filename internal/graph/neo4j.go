@@ -63,6 +63,13 @@ func createConstraints(ctx context.Context) {
 	if err != nil {
 		log.Printf("Warning: failed to create constraint on BusStop(Code): %v", err)
 	}
+
+	_, err = session.ExecuteWrite(ctx, func(transaction neo4j.ManagedTransaction) (any, error) {
+		return transaction.Run(ctx, "CREATE CONSTRAINT service_stop_id IF NOT EXISTS FOR (s:ServiceStop) REQUIRE s.ID IS UNIQUE", nil)
+	})
+	if err != nil {
+		log.Printf("Warning: failed to create constraint on ServiceStop(ID): %v", err)
+	}
 }
 
 // Function to calculate Haversine distance in meters
@@ -145,27 +152,68 @@ func BuildGraph(ctx context.Context, client *ltadatamall.APIClient) error {
 			// Ideally we sort them:
 			// sort.SliceStable(routes, func(i, j int) bool { return routes[i].StopSequence < routes[j].StopSequence })
 
-			for i := 0; i < len(routes)-1; i++ {
+			for i := 0; i < len(routes); i++ {
 				curr := routes[i]
-				next := routes[i+1]
+
+				// Create the ServiceStop node representing this service arriving at this stop
+				currID := fmt.Sprintf("%s-%d-%s", serviceNo, dir, curr.BusStopCode)
 
 				_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+					// 1. Merge the ServiceStop
+					// 2. Link it to the physical BusStop (BOARD and ALIGHT)
 					query := `
-						MATCH (a:BusStop {Code: $codeA}), (b:BusStop {Code: $codeB})
-						MERGE (a)-[r:ROUTE_TO {ServiceNo: $service, Direction: $dir}]->(b)
-						SET r.Distance = $dist
+						MATCH (bs:BusStop {Code: $code})
+						MERGE (ss:ServiceStop {ID: $id})
+						SET ss.ServiceNo = $service,
+						    ss.Direction = $dir,
+						    ss.StopCode = $code,
+						    ss.StopSequence = $seq
+
+						// Create BOARD relationship from physical stop to service stop
+						// We add a 'penalty' distance (e.g. 100m) to discourage excessive transferring
+						MERGE (bs)-[b:BOARD]->(ss)
+						SET b.Distance = 100
+
+						// Create ALIGHT relationship from service stop to physical stop
+						MERGE (ss)-[a:ALIGHT]->(bs)
+						SET a.Distance = 0
 					`
 					params := map[string]interface{}{
-						"codeA":   curr.BusStopCode,
-						"codeB":   next.BusStopCode,
+						"id":      currID,
+						"code":    curr.BusStopCode,
 						"service": serviceNo,
 						"dir":     dir,
-						"dist":    next.Distance - curr.Distance, // Approximate distance traveled between stops
+						"seq":     curr.StopSequence,
 					}
 					return tx.Run(ctx, query, params)
 				})
 				if err != nil {
-					log.Printf("Failed to insert route edge %s -> %s: %v", curr.BusStopCode, next.BusStopCode, err)
+					log.Printf("Failed to insert ServiceStop %s: %v", currID, err)
+				}
+
+				// If there's a next stop, connect the two ServiceStops directly
+				if i < len(routes)-1 {
+					next := routes[i+1]
+					nextID := fmt.Sprintf("%s-%d-%s", serviceNo, dir, next.BusStopCode)
+
+					_, err = session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+						query := `
+							MATCH (curr:ServiceStop {ID: $currID}), (next:ServiceStop {ID: $nextID})
+							MERGE (curr)-[r:ROUTE_TO]->(next)
+							SET r.Distance = $dist,
+							    r.ServiceNo = $service
+						`
+						params := map[string]interface{}{
+							"currID":  currID,
+							"nextID":  nextID,
+							"dist":    next.Distance - curr.Distance, // Actual travel distance
+							"service": serviceNo,
+						}
+						return tx.Run(ctx, query, params)
+					})
+					if err != nil {
+						log.Printf("Failed to insert ROUTE_TO edge %s -> %s: %v", currID, nextID, err)
+					}
 				}
 			}
 		}

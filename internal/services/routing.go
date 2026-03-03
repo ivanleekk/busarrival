@@ -26,9 +26,13 @@ func FindIdealRoute(ctx context.Context, originCode string, destinationCode stri
 	// Native shortestPath considers hop count. Let's use it for the initial version.
 
 	// Using basic shortestPath directly for stability and simplicity without requiring APOC plugin.
+	// Since we are now using a Route-Expanded Graph, paths must go through:
+	// BusStop -> BOARD -> ServiceStop -> ROUTE_TO -> ServiceStop -> ALIGHT -> BusStop -> (TRANSFER_TO -> BusStop)
+	// shortestPath will minimize the number of hops (which intrinsically minimizes transfers because
+	// a transfer takes 3 hops: ALIGHT -> TRANSFER_TO -> BOARD).
 	fallbackQuery := `
-		MATCH p = shortestPath((start:BusStop {Code: $originCode})-[:ROUTE_TO|TRANSFER_TO*..50]->(end:BusStop {Code: $destCode}))
-		RETURN [n IN nodes(p) | n.Code] AS stops,
+		MATCH p = shortestPath((start:BusStop {Code: $originCode})-[:BOARD|ROUTE_TO|ALIGHT|TRANSFER_TO*..50]->(end:BusStop {Code: $destCode}))
+		RETURN [n IN nodes(p) | COALESCE(n.Code, n.ID)] AS stops,
 		       [r IN relationships(p) | type(r) + '_' + COALESCE(r.ServiceNo, 'WALK')] AS services,
 		       0.0 AS weight
 	`

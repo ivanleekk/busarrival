@@ -57,10 +57,10 @@ func GetIdealRouteHandler(client *ltadatamall.APIClient) gin.HandlerFunc {
 		var predictedArrival *services.PredictionResult
 		if len(path.Services) > 0 && arrivals.Services != nil {
 			firstService := ""
-			// Relationships format is type_serviceNo e.g. ROUTE_TO_190 or TRANSFER_TO_WALK
+			// Relationships format is type_serviceNo e.g. BOARD_WALK or ROUTE_TO_190 or TRANSFER_TO_WALK
 			// We can parse it naively here or simply use the first valid bus service in the path
 			for _, srv := range path.Services {
-				if srv != "TRANSFER_TO_WALK" {
+				if srv != "TRANSFER_TO_WALK" && srv != "BOARD_WALK" && srv != "ALIGHT_WALK" {
 					// extract service part
 					// Simple string manipulation based on `type(r) + '_' + COALESCE(r.ServiceNo, 'WALK')`
 					// e.g. "ROUTE_TO_190"
