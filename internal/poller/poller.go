@@ -13,7 +13,7 @@ import (
 func StartPoller(client *ltadatamall.APIClient) {
 	log.Println("Starting bus arrival poller...")
 
-	ticker := time.NewTicker(3 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
 		// Run once immediately
 		poll(client)
@@ -34,7 +34,7 @@ func poll(client *ltadatamall.APIClient) {
 
 	var wg sync.WaitGroup
 	// Limit concurrency to avoid overwhelming the API or getting rate limited
-	sem := make(chan struct{}, 20)
+	sem := make(chan struct{}, 2)
 
 	for _, stop := range busStopsRes.BusStops {
 		wg.Add(1)
