@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/ivanleekk/ltadatamall"
@@ -147,74 +148,57 @@ func BuildGraph(ctx context.Context, client *ltadatamall.APIClient) error {
 
 	for serviceNo, dirs := range routesByService {
 		for dir, routes := range dirs {
-			// Sort routes by StopSequence manually since LTA API returns them mostly sorted but we need to ensure it
-			// However, let's assume they are somewhat ordered for now, or just link them sequentially if we just loop
-			// Ideally we sort them:
-			// sort.SliceStable(routes, func(i, j int) bool { return routes[i].StopSequence < routes[j].StopSequence })
+			// Sort routes by StopSequence manually to guarantee sequential ordering
+			sort.SliceStable(routes, func(i, j int) bool {
+				return routes[i].StopSequence < routes[j].StopSequence
+			})
 
-			for i := 0; i < len(routes); i++ {
-				curr := routes[i]
-
-				// Create the ServiceStop node representing this service arriving at this stop
-				currID := fmt.Sprintf("%s-%d-%s", serviceNo, dir, curr.BusStopCode)
-
-				_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-					// 1. Merge the ServiceStop
-					// 2. Link it to the physical BusStop (BOARD and ALIGHT)
-					query := `
-						MATCH (bs:BusStop {Code: $code})
-						MERGE (ss:ServiceStop {ID: $id})
-						SET ss.ServiceNo = $service,
-						    ss.Direction = $dir,
-						    ss.StopCode = $code,
-						    ss.StopSequence = $seq
-
-						// Create BOARD relationship from physical stop to service stop
-						// We add a 'penalty' distance (e.g. 100m) to discourage excessive transferring
-						MERGE (bs)-[b:BOARD]->(ss)
-						SET b.Distance = 100
-
-						// Create ALIGHT relationship from service stop to physical stop
-						MERGE (ss)-[a:ALIGHT]->(bs)
-						SET a.Distance = 0
-					`
-					params := map[string]interface{}{
-						"id":      currID,
-						"code":    curr.BusStopCode,
-						"service": serviceNo,
-						"dir":     dir,
-						"seq":     curr.StopSequence,
-					}
-					return tx.Run(ctx, query, params)
+			// Prepare batch nodes data
+			var nodesData []map[string]interface{}
+			for _, route := range routes {
+				nodesData = append(nodesData, map[string]interface{}{
+					"id":      fmt.Sprintf("%s-%d-%s", serviceNo, dir, route.BusStopCode),
+					"code":    route.BusStopCode,
+					"service": serviceNo,
+					"dir":     dir,
+					"seq":     route.StopSequence,
+					"dist":    route.Distance,
 				})
-				if err != nil {
-					log.Printf("Failed to insert ServiceStop %s: %v", currID, err)
-				}
+			}
 
-				// If there's a next stop, connect the two ServiceStops directly
-				if i < len(routes)-1 {
-					next := routes[i+1]
-					nextID := fmt.Sprintf("%s-%d-%s", serviceNo, dir, next.BusStopCode)
+			// Batch create all nodes, BOARD/ALIGHT edges, and ROUTE_TO edges for this service direction in one query
+			_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+				query := `
+					UNWIND $nodes AS node
+					MATCH (bs:BusStop {Code: node.code})
+					MERGE (ss:ServiceStop {ID: node.id})
+					SET ss.ServiceNo = node.service,
+					    ss.Direction = node.dir,
+					    ss.StopCode = node.code,
+					    ss.StopSequence = node.seq,
+						ss.Distance = node.dist
 
-					_, err = session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-						query := `
-							MATCH (curr:ServiceStop {ID: $currID}), (next:ServiceStop {ID: $nextID})
-							MERGE (curr)-[r:ROUTE_TO]->(next)
-							SET r.Distance = $dist,
-							    r.ServiceNo = $service
-						`
-						params := map[string]interface{}{
-							"currID":  currID,
-							"nextID":  nextID,
-							"dist":    next.Distance - curr.Distance, // Actual travel distance
-							"service": serviceNo,
-						}
-						return tx.Run(ctx, query, params)
-					})
-					if err != nil {
-						log.Printf("Failed to insert ROUTE_TO edge %s -> %s: %v", currID, nextID, err)
-					}
+					MERGE (bs)-[b:BOARD]->(ss)
+					SET b.Distance = 100
+
+					MERGE (ss)-[a:ALIGHT]->(bs)
+					SET a.Distance = 0
+
+					WITH collect(ss) as stops
+					// Now iterate through the stops to create ROUTE_TO edges
+					UNWIND range(0, size(stops)-2) AS i
+					WITH stops[i] AS curr, stops[i+1] AS next
+					MERGE (curr)-[r:ROUTE_TO]->(next)
+					SET r.Distance = CASE WHEN next.Distance - curr.Distance >= 0 THEN next.Distance - curr.Distance ELSE 0 END,
+					    r.ServiceNo = curr.ServiceNo
+				`
+				params := map[string]interface{}{
+					"nodes": nodesData,
 				}
+				return tx.Run(ctx, query, params)
+			})
+			if err != nil {
+				log.Printf("Failed to batch insert route %s (dir %d): %v", serviceNo, dir, err)
 			}
 		}
 	}
