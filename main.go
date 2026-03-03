@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/ivanleekk/busarrival/internal/api"
+	"github.com/gin-contrib/cors"
 	"github.com/ivanleekk/busarrival/internal/database"
 	"github.com/ivanleekk/busarrival/internal/graph"
 	"github.com/ivanleekk/busarrival/internal/poller"
@@ -51,11 +52,35 @@ func main() {
 	poller.StartPoller(client)
 
 	router := gin.Default()
+
+	// Setup CORS
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"}, // Adjust in production
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Length", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+	}))
+
 	router.GET("/busstops/:skip", getBusStopsPaginatedHandler(client))
 	router.GET("/busstops", getBusStopsHandler(client))
 
 	// New routing and prediction endpoint
 	router.GET("/api/route", api.GetIdealRouteHandler(client))
+
+	// Analysis endpoints
+	router.GET("/api/analysis/intervals", api.GetArrivalIntervalsHandler())
+
+	// Live arrivals endpoint
+	router.GET("/api/arrivals/:stopCode", func(c *gin.Context) {
+		stopCode := c.Param("stopCode")
+		arrivals, err := ltadatamall.GetBusArrivalAtBusStop(client, stopCode)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, arrivals)
+	})
 
 	err = router.Run("0.0.0.0:8080")
 	if err != nil {
